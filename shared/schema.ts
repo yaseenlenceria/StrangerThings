@@ -1,18 +1,44 @@
-import { sql } from "drizzle-orm";
-import { pgTable, text, varchar } from "drizzle-orm/pg-core";
-import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
-export const users = pgTable("users", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  username: text("username").notNull().unique(),
-  password: text("password").notNull(),
-});
+// WebSocket Message Types
+export const wsMessageSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("match"),
+    partnerId: z.string(),
+  }),
+  z.object({
+    type: z.literal("offer"),
+    sdp: z.string(),
+    from: z.string(),
+  }),
+  z.object({
+    type: z.literal("answer"),
+    sdp: z.string(),
+    from: z.string(),
+  }),
+  z.object({
+    type: z.literal("ice"),
+    candidate: z.any(),
+    from: z.string(),
+  }),
+  z.object({
+    type: z.literal("next"),
+  }),
+  z.object({
+    type: z.literal("leave"),
+  }),
+  z.object({
+    type: z.literal("error"),
+    message: z.string(),
+  }),
+]);
 
-export const insertUserSchema = createInsertSchema(users).pick({
-  username: true,
-  password: true,
-});
+export type WSMessage = z.infer<typeof wsMessageSchema>;
 
-export type InsertUser = z.infer<typeof insertUserSchema>;
-export type User = typeof users.$inferSelect;
+// Connection States
+export type ConnectionState = "idle" | "searching" | "connecting" | "connected";
+
+export interface PeerInfo {
+  id: string;
+  isConnected: boolean;
+}
