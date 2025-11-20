@@ -196,6 +196,18 @@ export default function VoiceChat() {
         console.log("Received remote track");
         if (remoteAudioRef.current && event.streams[0]) {
           remoteAudioRef.current.srcObject = event.streams[0];
+          // Ensure audio plays
+          remoteAudioRef.current.play().catch(err => {
+            console.error("Error playing remote audio:", err);
+            // Try again after user interaction
+            toast({
+              title: "Audio ready",
+              description: "Click anywhere to enable audio",
+            });
+            document.addEventListener('click', () => {
+              remoteAudioRef.current?.play();
+            }, { once: true });
+          });
           setState("connected");
         }
       };
@@ -296,95 +308,168 @@ export default function VoiceChat() {
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
-      {/* Main Content - Centered */}
-      <div className="flex-1 flex items-center justify-center p-4">
-        <div className="w-full max-w-md flex flex-col items-center space-y-8">
-          {/* Status Icon */}
-          <div className="flex items-center justify-center">
-            {getStatusIcon()}
-          </div>
-
-          {/* Soundwave Visualization - Only show when connected */}
-          {state === "connected" && (
-            <div className="flex items-center justify-center space-x-2 h-16" data-testid="soundwave-visualization">
-              {[...Array(5)].map((_, i) => (
-                <div
-                  key={i}
-                  className="w-2 bg-primary rounded-full animate-soundwave"
-                  style={{
-                    height: "100%",
-                    animationDelay: `${i * 0.1}s`,
-                    animationDuration: "1s",
-                  }}
-                />
-              ))}
+      {/* Header */}
+      <header className="border-b border-border bg-card">
+        <div className="container mx-auto px-4 py-6">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-3">
+              <div className="flex items-center justify-center w-10 h-10 rounded-md bg-primary">
+                <Phone className="w-6 h-6 text-primary-foreground" />
+              </div>
+              <div>
+                <h1 className="text-xl font-semibold text-foreground">Stranger Voice</h1>
+                <p className="text-xs text-muted-foreground">Connect with random people</p>
+              </div>
             </div>
-          )}
-
-          {/* Status Text */}
-          <h1 className="text-4xl font-semibold text-center" data-testid="text-status">
-            {getStatusText()}
-          </h1>
-
-          {/* Action Buttons */}
-          <div className="flex flex-col items-center space-y-4 w-full">
-            {/* Start/Stop Button */}
-            {state === "idle" ? (
-              <Button
-                size="lg"
-                className="min-h-16 w-full md:w-auto md:min-w-64 text-xl font-medium"
-                onClick={startChat}
-                data-testid="button-start-chat"
-              >
-                <Phone className="mr-2 h-6 w-6" />
-                Start Chat
-              </Button>
-            ) : state === "searching" || state === "connecting" ? (
-              <Button
-                size="lg"
-                variant="outline"
-                className="min-h-16 w-full md:w-auto md:min-w-64 text-xl font-medium"
-                onClick={cancelSearch}
-                data-testid="button-cancel"
-              >
-                <PhoneOff className="mr-2 h-6 w-6" />
-                Cancel
-              </Button>
-            ) : null}
-
-            {/* Next Button - Only show when connected */}
-            {state === "connected" && (
-              <Button
-                size="default"
-                variant="secondary"
-                className="min-h-14 w-full md:w-auto md:min-w-64 text-lg font-medium"
-                onClick={nextChat}
-                data-testid="button-next"
-              >
-                <SkipForward className="mr-2 h-5 w-5" />
-                Next
-              </Button>
-            )}
+            <div className="hidden md:flex items-center space-x-2 text-sm text-muted-foreground">
+              <Radio className="w-4 h-4" />
+              <span>{state === "connected" ? "Live" : "Ready"}</span>
+            </div>
           </div>
+        </div>
+      </header>
 
-          {/* Connection hint */}
-          {state === "searching" && (
-            <p className="text-muted-foreground text-center text-sm" data-testid="text-hint">
-              Waiting for someone to join...
-            </p>
-          )}
+      {/* Main Content - Centered */}
+      <div className="flex-1 flex items-center justify-center p-4 bg-gradient-to-b from-background to-muted/20">
+        <div className="w-full max-w-lg">
+          {/* Dialer Card */}
+          <div className="bg-card border border-card-border rounded-lg shadow-lg p-8 md:p-12">
+            <div className="flex flex-col items-center space-y-8">
+              {/* Status Icon with Circle Background */}
+              <div className="relative">
+                <div className={`absolute inset-0 rounded-full ${state === "connected" ? "bg-primary/10 animate-pulse" : "bg-muted"} blur-xl`}></div>
+                <div className="relative flex items-center justify-center w-24 h-24 rounded-full bg-primary/10 border-2 border-primary/20">
+                  {getStatusIcon()}
+                </div>
+              </div>
+
+              {/* Soundwave Visualization - Only show when connected */}
+              {state === "connected" && (
+                <div className="flex items-center justify-center space-x-2 h-16" data-testid="soundwave-visualization">
+                  {[...Array(5)].map((_, i) => (
+                    <div
+                      key={i}
+                      className="w-3 bg-primary rounded-full animate-soundwave"
+                      style={{
+                        height: "100%",
+                        animationDelay: `${i * 0.1}s`,
+                        animationDuration: "1s",
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
+
+              {/* Status Text */}
+              <div className="text-center space-y-2">
+                <h2 className="text-4xl md:text-5xl font-semibold text-foreground" data-testid="text-status">
+                  {getStatusText()}
+                </h2>
+                {state === "idle" && (
+                  <p className="text-sm text-muted-foreground">
+                    Click below to start talking with a random stranger
+                  </p>
+                )}
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex flex-col items-center space-y-4 w-full pt-4">
+                {/* Start/Stop Button */}
+                {state === "idle" ? (
+                  <Button
+                    size="lg"
+                    className="min-h-16 w-full text-xl font-medium shadow-lg hover:shadow-xl transition-shadow"
+                    onClick={startChat}
+                    data-testid="button-start-chat"
+                  >
+                    <Phone className="mr-3 h-6 w-6" />
+                    Start Chat
+                  </Button>
+                ) : state === "searching" || state === "connecting" ? (
+                  <Button
+                    size="lg"
+                    variant="outline"
+                    className="min-h-16 w-full text-xl font-medium"
+                    onClick={cancelSearch}
+                    data-testid="button-cancel"
+                  >
+                    <PhoneOff className="mr-3 h-6 w-6" />
+                    Cancel
+                  </Button>
+                ) : null}
+
+                {/* Next Button - Only show when connected */}
+                {state === "connected" && (
+                  <Button
+                    size="default"
+                    variant="secondary"
+                    className="min-h-14 w-full text-lg font-medium"
+                    onClick={nextChat}
+                    data-testid="button-next"
+                  >
+                    <SkipForward className="mr-2 h-5 w-5" />
+                    Next Stranger
+                  </Button>
+                )}
+              </div>
+
+              {/* Connection hint */}
+              {state === "searching" && (
+                <p className="text-muted-foreground text-center text-sm animate-pulse" data-testid="text-hint">
+                  Waiting for someone to join...
+                </p>
+              )}
+
+              {state === "connected" && (
+                <div className="flex items-center space-x-2 text-sm text-green-600 dark:text-green-400">
+                  <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+                  <span className="font-medium">Call Active</span>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       </div>
 
       {/* Footer */}
-      <footer className="py-8 text-center">
-        <p className="text-sm text-muted-foreground">
-          Stranger Voice - Connect with random people worldwide
-        </p>
+      <footer className="border-t border-border bg-card">
+        <div className="container mx-auto px-4 py-8">
+          <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+            <div className="text-center md:text-left">
+              <p className="text-sm text-muted-foreground">
+                Connect with strangers worldwide through instant voice calls
+              </p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Anonymous • Secure • Peer-to-peer
+              </p>
+            </div>
+            <div className="flex items-center space-x-6 text-xs text-muted-foreground">
+              <div className="flex items-center space-x-2">
+                <div className="w-2 h-2 rounded-full bg-green-500"></div>
+                <span>Audio Only</span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <div className="w-2 h-2 rounded-full bg-blue-500"></div>
+                <span>WebRTC</span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <div className="w-2 h-2 rounded-full bg-purple-500"></div>
+                <span>No Recording</span>
+              </div>
+            </div>
+          </div>
+        </div>
       </footer>
 
       {/* Hidden audio element for remote stream */}
-      <audio ref={remoteAudioRef} autoPlay playsInline data-testid="audio-remote" />
+      <audio 
+        ref={remoteAudioRef} 
+        autoPlay 
+        playsInline
+        controls={false}
+        style={{ display: 'none' }}
+        data-testid="audio-remote" 
+      />
 
       {/* Soundwave animation styles */}
       <style>{`
