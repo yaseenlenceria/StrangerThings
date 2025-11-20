@@ -12,6 +12,7 @@ export default function VoiceChat() {
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement>(null);
   const partnerIdRef = useRef<string | null>(null);
+  const iceCandidateBufferRef = useRef<RTCIceCandidate[]>([]);
   const { toast } = useToast();
 
   // Cleanup on unmount
@@ -35,6 +36,8 @@ export default function VoiceChat() {
       wsRef.current.close();
       wsRef.current = null;
     }
+    // Clear ICE candidate buffer to prevent stale candidates
+    iceCandidateBufferRef.current = [];
     partnerIdRef.current = null;
     setIsAudioEnabled(false);
     setState("idle");
@@ -73,15 +76,40 @@ export default function VoiceChat() {
               await setupPeerConnection(false);
             }
             if (pcRef.current) {
-              await pcRef.current.setRemoteDescription(
-                new RTCSessionDescription({ type: "offer", sdp: message.sdp })
-              );
-              const answer = await pcRef.current.createAnswer();
-              await pcRef.current.setLocalDescription(answer);
-              ws.send(JSON.stringify({
-                type: "answer",
-                sdp: answer.sdp,
-              }));
+              try {
+                await pcRef.current.setRemoteDescription(
+                  new RTCSessionDescription({ type: "offer", sdp: message.sdp })
+                );
+                
+                // Flush buffered ICE candidates
+                if (iceCandidateBufferRef.current.length > 0) {
+                  console.log(`Flushing ${iceCandidateBufferRef.current.length} buffered ICE candidates`);
+                  for (const candidate of iceCandidateBufferRef.current) {
+                    try {
+                      await pcRef.current.addIceCandidate(candidate);
+                    } catch (err) {
+                      console.error("Error adding buffered ICE candidate:", err);
+                    }
+                  }
+                  iceCandidateBufferRef.current = [];
+                }
+                
+                const answer = await pcRef.current.createAnswer();
+                await pcRef.current.setLocalDescription(answer);
+                ws.send(JSON.stringify({
+                  type: "answer",
+                  sdp: answer.sdp,
+                }));
+                console.log("Answer sent successfully");
+              } catch (err) {
+                console.error("Error handling offer:", err);
+                toast({
+                  title: "Connection error",
+                  description: "Failed to establish connection",
+                  variant: "destructive",
+                });
+                resetForNext();
+              }
             }
             break;
           }
@@ -89,9 +117,28 @@ export default function VoiceChat() {
           case "answer": {
             console.log("Received answer from:", message.from);
             if (pcRef.current) {
-              await pcRef.current.setRemoteDescription(
-                new RTCSessionDescription({ type: "answer", sdp: message.sdp })
-              );
+              try {
+                await pcRef.current.setRemoteDescription(
+                  new RTCSessionDescription({ type: "answer", sdp: message.sdp })
+                );
+                
+                // Flush buffered ICE candidates
+                if (iceCandidateBufferRef.current.length > 0) {
+                  console.log(`Flushing ${iceCandidateBufferRef.current.length} buffered ICE candidates`);
+                  for (const candidate of iceCandidateBufferRef.current) {
+                    try {
+                      await pcRef.current.addIceCandidate(candidate);
+                    } catch (err) {
+                      console.error("Error adding buffered ICE candidate:", err);
+                    }
+                  }
+                  iceCandidateBufferRef.current = [];
+                }
+                
+                console.log("Answer processed successfully");
+              } catch (err) {
+                console.error("Error handling answer:", err);
+              }
             }
             break;
           }
@@ -99,7 +146,20 @@ export default function VoiceChat() {
           case "ice": {
             console.log("Received ICE candidate from:", message.from);
             if (pcRef.current && message.candidate) {
-              await pcRef.current.addIceCandidate(new RTCIceCandidate(message.candidate));
+              try {
+                const candidate = new RTCIceCandidate(message.candidate);
+                // Only add ICE candidate if remote description is set
+                if (pcRef.current.remoteDescription) {
+                  await pcRef.current.addIceCandidate(candidate);
+                  console.log("ICE candidate added successfully");
+                } else {
+                  // Buffer ICE candidates until remote description is set
+                  console.log("Buffering ICE candidate (remote description not yet set)");
+                  iceCandidateBufferRef.current.push(candidate);
+                }
+              } catch (err) {
+                console.error("Error adding ICE candidate:", err);
+              }
             }
             break;
           }
@@ -217,10 +277,28 @@ export default function VoiceChat() {
         console.log("Connection state:", pc.connectionState);
         if (pc.connectionState === "connected") {
           setState("connected");
-        } else if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
+        } else if (pc.connectionState === "failed") {
+          console.log("Connection failed, resetting...");
           toast({
-            title: "Connection lost",
-            description: "Trying to reconnect...",
+            title: "Connection failed",
+            description: "Looking for a new stranger...",
+            variant: "destructive",
+          });
+          resetForNext();
+        }
+        // Note: "disconnected" is a temporary state, don't reset on it
+      };
+
+      // Monitor ICE connection state (more reliable than connection state)
+      pc.oniceconnectionstatechange = () => {
+        console.log("ICE connection state:", pc.iceConnectionState);
+        if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
+          console.log("ICE connected successfully");
+        } else if (pc.iceConnectionState === "failed") {
+          console.log("ICE connection failed");
+          toast({
+            title: "Connection failed",
+            description: "Looking for a new stranger...",
             variant: "destructive",
           });
           resetForNext();
@@ -253,6 +331,9 @@ export default function VoiceChat() {
       pcRef.current.close();
       pcRef.current = null;
     }
+    
+    // Clear ICE candidate buffer
+    iceCandidateBufferRef.current = [];
     
     partnerIdRef.current = null;
     setState("searching");
