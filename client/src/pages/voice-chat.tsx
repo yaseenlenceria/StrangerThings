@@ -297,30 +297,18 @@ export default function VoiceChat() {
         console.log("Connection state:", pc.connectionState);
         if (pc.connectionState === "connected") {
           setState("connected");
-        } else if (pc.connectionState === "failed") {
-          console.log("Connection failed, resetting...");
-          toast({
-            title: "Connection failed",
-            description: "Looking for a new stranger...",
-            variant: "destructive",
-          });
-          resetForNext();
         }
+        // Don't auto-disconnect on "failed" - let WebRTC try to recover
+        // Calls should stay connected until user manually clicks "Next" or "Cancel"
       };
 
       pc.oniceconnectionstatechange = () => {
         console.log("ICE connection state:", pc.iceConnectionState);
         if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
           console.log("ICE connected successfully");
-        } else if (pc.iceConnectionState === "failed") {
-          console.log("ICE connection failed");
-          toast({
-            title: "Connection failed",
-            description: "Looking for a new stranger...",
-            variant: "destructive",
-          });
-          resetForNext();
         }
+        // Don't auto-disconnect on "failed" - WebRTC can recover from temporary failures
+        // Only disconnect when user manually clicks "Next" or "Cancel"
       };
 
       if (isInitiator) {

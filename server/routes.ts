@@ -74,6 +74,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
     console.log(`Client connected: ${clientId}`);
 
+    // Setup ping/pong keepalive to prevent timeout
+    const pingInterval = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.ping();
+      }
+    }, 30000); // Ping every 30 seconds
+
+    ws.on("pong", () => {
+      console.log(`Received pong from ${clientId}`);
+    });
+
     ws.on("message", (data: string) => {
       try {
         const message = JSON.parse(data.toString()) as WSMessage;
@@ -173,11 +184,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
     ws.on("close", () => {
       console.log(`Client disconnected: ${clientId}`);
+      clearInterval(pingInterval);
       removeClient(clientId);
     });
 
     ws.on("error", (error) => {
       console.error(`WebSocket error for client ${clientId}:`, error);
+      clearInterval(pingInterval);
       removeClient(clientId);
     });
   });

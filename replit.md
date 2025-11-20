@@ -81,6 +81,10 @@ Preferred communication style: Simple, everyday language.
 - Multiple state transitions tracked: idle → searching → connecting → connected
 - Cleanup on disconnect stops media tracks and closes peer connections
 - "Next" functionality triggers cleanup and rejoins matchmaking queue
+- **NO TIME LIMITS**: Calls stay connected indefinitely until user manually disconnects
+- WebSocket keepalive (ping/pong every 30s) prevents timeout disconnections
+- WebRTC auto-recovery enabled - temporary network issues won't drop calls
+- Only user actions (Next, Cancel, tab close) or genuine failures trigger disconnect
 
 ### External Dependencies
 
