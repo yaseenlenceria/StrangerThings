@@ -1,0 +1,165 @@
+You are an expert full-stack engineer.  
+Your task is to build a SIMPLE but FULLY WORKING “Stranger Voice Call WebApp” using:
+
+✔ HTML  
+✔ CSS  
+✔ JavaScript (WebRTC client)  
+✔ Node.js (signaling server)  
+✔ WebSockets  
+✔ Replit hosting  
+✔ Very clean, minimal code  
+
+NO unnecessary complexity.  
+NO extra features.  
+Just a clean working system that connects two strangers using WebRTC.
+
+=====================================================
+🎯 MAIN GOAL — MUST WORK 100%
+=====================================================
+When a user clicks “Start Chat”, the app:
+
+1. Joins a matchmaking queue.
+2. When two users are available → they get paired.
+3. They automatically exchange:
+   · WebRTC offer  
+   · WebRTC answer  
+   · ICE candidates  
+4. A voice-only call starts (audio only).
+5. User can press “Next” → disconnect → requeue.
+
+This must be stable, simple, minimal, clean.
+
+=====================================================
+📦 PROJECT STRUCTURE (REPLIT)
+=====================================================
+Create EXACTLY this structure:
+
+/public
+    index.html
+    style.css
+    app.js
+server.js
+package.json
+README.md
+
+=====================================================
+📡 SIGNALING SERVER (Node.js)
+=====================================================
+Implement a VERY SIMPLE WebSocket-based signaling server:
+
+• Use "ws" library  
+• Hold a waitingQueue array  
+• When a user joins:
+    - If queue empty → push user to queue
+    - If queue has someone → pair them
+• Send messages:
+    { type: "match", partnerId }
+    { type: "offer", sdp }
+    { type: "answer", sdp }
+    { type: "ice", candidate }
+    { type: "next" }
+    { type: "leave" }
+
+Also handle:
+• Disconnect
+• Cleanup
+• Auto requeue on “Next”
+
+=====================================================
+🎧 WEBRTC CLIENT LOGIC (app.js)
+=====================================================
+Implement a fully working **pure JavaScript WebRTC flow**:
+
+1. navigator.mediaDevices.getUserMedia({ audio: true })
+2. Create RTCPeerConnection with:
+   iceServers: [
+     { urls: "stun:stun.l.google.com:19302" }
+   ]
+3. Add audio track to PC
+4. onicecandidate → send to partner
+5. ontrack → play remote audio
+6. Create offer → send
+7. Receive answer → setRemoteDescription
+8. Handle Next → close peer → reset → rejoin queue
+
+NO VIDEO.  
+VOICE ONLY.
+
+=====================================================
+🎨 UI REQUIREMENTS (index.html + style.css)
+=====================================================
+Create a very simple, clean UI:
+
+• BIG “Start Chat” button
+• Status text:
+    “Idle”
+    “Searching…”
+    “Connecting…”
+    “Connected”
+• “Next” button (hidden until connected)
+• Simple animated soundwave (optional but nice)
+• Basic footer
+
+The UI must look clean and modern but not complicated.
+
+=====================================================
+📱 RESPONSIVE REQUIREMENTS
+=====================================================
+• Works on mobile (very important).  
+• Buttons large enough for touch.  
+• Audio autoplay must be correct.
+
+=====================================================
+🚀 HOW IT SHOULD FLOW
+=====================================================
+User opens website →
+Clicks “Start Chat” →
+WebSocket connects →
+User joins queue →
+Matched with partner →
+WebRTC handshake →
+Call starts →
+User talks →
+Press “Next” →
+Peer connection closes →
+New match starts.
+
+=====================================================
+📘 WHAT YOU MUST GENERATE
+=====================================================
+Output ALL of the following:
+
+1. ✦ Full index.html  
+2. ✦ Full style.css  
+3. ✦ Full app.js with complete WebRTC logic  
+4. ✦ Full server.js with complete WebSocket signaling + matchmaking  
+5. ✦ Full package.json  
+6. ✦ Full README.md with run instructions  
+
+Everything MUST be complete, valid, and production-ready.
+
+=====================================================
+🧪 TESTING IN REPLIT
+=====================================================
+Add clear instructions in README:
+
+• npm install  
+• npm start  
+• Replit must serve server.js  
+• Express must serve /public folder  
+• WebSocket server runs on same port  
+
+=====================================================
+⚠️ IMPORTANT RULES
+=====================================================
+✔ Keep code VERY clean.  
+✔ No unnecessary libraries.  
+✔ No over-engineering.  
+✔ Focus ONLY on:
+   - Matchmaking
+   - WebRTC audio call
+   - Next button
+✔ Everything must work on first run.
+
+=====================================================
+Now generate the entire working project.
