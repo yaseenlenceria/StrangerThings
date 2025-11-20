@@ -16,6 +16,9 @@ export default function VoiceChat() {
   const partnerIdRef = useRef<string | null>(null);
   const iceCandidateBufferRef = useRef<RTCIceCandidate[]>([]);
   const isIntentionalCloseRef = useRef(false);
+  const heartbeatIntervalRef = useRef<number | null>(null);
+  const disconnectTimerRef = useRef<number | null>(null);
+  const iceRestartAttemptsRef = useRef<number>(0);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -25,6 +28,14 @@ export default function VoiceChat() {
   }, []);
 
   const cleanup = () => {
+    if (heartbeatIntervalRef.current) {
+      window.clearInterval(heartbeatIntervalRef.current);
+      heartbeatIntervalRef.current = null;
+    }
+    if (disconnectTimerRef.current) {
+      window.clearTimeout(disconnectTimerRef.current);
+      disconnectTimerRef.current = null;
+    }
     if (pcRef.current) {
       pcRef.current.close();
       pcRef.current = null;
@@ -56,6 +67,15 @@ export default function VoiceChat() {
 
     ws.onopen = () => {
       console.log("WebSocket connected");
+      // Start heartbeat ping every 25s (app-level)
+      if (heartbeatIntervalRef.current) {
+        window.clearInterval(heartbeatIntervalRef.current);
+      }
+      heartbeatIntervalRef.current = window.setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "ping", ts: Date.now() }));
+        }
+      }, 25000);
       // Request to be matched with a partner
       ws.send(JSON.stringify({ type: "match" }));
     };
@@ -71,6 +91,10 @@ export default function VoiceChat() {
             partnerIdRef.current = message.partnerId;
             setState("connecting");
             await setupPeerConnection(message.initiator);
+            break;
+          }
+          case "pong": {
+            // Heartbeat acknowledgement from server
             break;
           }
 
@@ -98,8 +122,13 @@ export default function VoiceChat() {
                   iceCandidateBufferRef.current = [];
                 }
                 
-                const answer = await pcRef.current.createAnswer();
+                console.log("Creating answer");
+                const answer = await pcRef.current.createAnswer({
+                  offerToReceiveAudio: true,
+                  offerToReceiveVideo: false,
+                });
                 await pcRef.current.setLocalDescription(answer);
+                console.log("Sending answer");
                 ws.send(JSON.stringify({
                   type: "answer",
                   sdp: answer.sdp,
@@ -202,6 +231,10 @@ export default function VoiceChat() {
 
     ws.onclose = () => {
       console.log("WebSocket closed");
+      if (heartbeatIntervalRef.current) {
+        window.clearInterval(heartbeatIntervalRef.current);
+        heartbeatIntervalRef.current = null;
+      }
       
       // Check if this was an intentional close (from cleanup)
       if (isIntentionalCloseRef.current) {
@@ -250,45 +283,93 @@ export default function VoiceChat() {
         setIsAudioEnabled(true);
       }
 
+      const turnUrl = import.meta.env.VITE_TURN_URL as string | undefined;
+      const turnUser = import.meta.env.VITE_TURN_USER as string | undefined;
+      const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL as string | undefined;
+
+      const iceServers: RTCIceServer[] = [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" },
+        { urls: "stun:stun2.l.google.com:19302" },
+        { urls: "stun:stun3.l.google.com:19302" },
+        { urls: "stun:stun4.l.google.com:19302" },
+      ];
+      if (turnUrl && turnUser && turnCredential) {
+        console.log("Using TURN server:", turnUrl);
+        iceServers.push({ urls: turnUrl, username: turnUser, credential: turnCredential });
+      } else {
+        console.warn("No TURN server configured, may have issues with restrictive NATs");
+      }
+
       const configuration: RTCConfiguration = {
-        iceServers: [
-          { urls: "stun:stun.l.google.com:19302" },
-          { urls: "stun:stun1.l.google.com:19302" },
-        ],
+        iceServers,
+        bundlePolicy: "max-bundle",
+        iceTransportPolicy: "all",
       };
 
       const pc = new RTCPeerConnection(configuration);
       pcRef.current = pc;
 
-      localStreamRef.current.getTracks().forEach(track => {
+      // Add local audio tracks
+      const tracks = localStreamRef.current.getTracks();
+      console.log(`Adding ${tracks.length} local tracks to peer connection`);
+      tracks.forEach(track => {
+        console.log(`Adding track: ${track.kind}, enabled: ${track.enabled}, muted: ${track.muted}`);
         pc.addTrack(track, localStreamRef.current!);
       });
 
       pc.onicecandidate = (event) => {
-        if (event.candidate && wsRef.current?.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify({
-            type: "ice",
-            candidate: event.candidate.toJSON(),
-          }));
+        if (event.candidate) {
+          console.log("Generated ICE candidate:", event.candidate.type);
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({
+              type: "ice",
+              candidate: event.candidate.toJSON(),
+            }));
+          } else {
+            console.warn("Cannot send ICE candidate, WebSocket not open");
+          }
+        } else {
+          console.log("ICE gathering complete");
         }
       };
 
       pc.ontrack = (event) => {
-        console.log("Received remote track");
+        console.log("Received remote track:", event.track.kind);
         if (remoteAudioRef.current && event.streams[0]) {
+          console.log("Setting up remote audio stream");
           remoteAudioRef.current.srcObject = event.streams[0];
-          remoteAudioRef.current.play().catch(err => {
-            console.error("Error playing remote audio:", err);
-            toast({
-              title: "Audio ready",
-              description: "Click to unmute audio",
-            });
-            const playAudio = () => {
-              remoteAudioRef.current?.play();
-              document.removeEventListener('click', playAudio);
-            };
-            document.addEventListener('click', playAudio, { once: true });
-          });
+          remoteAudioRef.current.volume = 1.0;
+          remoteAudioRef.current.muted = false;
+
+          // Attempt to play audio
+          const playPromise = remoteAudioRef.current.play();
+          if (playPromise !== undefined) {
+            playPromise
+              .then(() => {
+                console.log("Remote audio playing successfully");
+                toast({
+                  title: "Connected!",
+                  description: "Audio call is active",
+                });
+              })
+              .catch(err => {
+                console.error("Error playing remote audio:", err);
+                toast({
+                  title: "Audio blocked",
+                  description: "Click anywhere to enable audio",
+                  variant: "destructive",
+                });
+                const playAudio = () => {
+                  if (remoteAudioRef.current) {
+                    remoteAudioRef.current.play()
+                      .then(() => console.log("Audio started after user interaction"))
+                      .catch(e => console.error("Still cannot play audio:", e));
+                  }
+                };
+                document.addEventListener('click', playAudio, { once: true });
+              });
+          }
           setState("connected");
         }
       };
@@ -302,23 +383,62 @@ export default function VoiceChat() {
         // Calls should stay connected until user manually clicks "Next" or "Cancel"
       };
 
+      const attemptIceRestart = async () => {
+        if (!pcRef.current || wsRef.current?.readyState !== WebSocket.OPEN) return;
+        if (iceRestartAttemptsRef.current >= 2) return; // cap restarts
+        iceRestartAttemptsRef.current += 1;
+        try {
+          console.log("Attempting ICE restart", { attempt: iceRestartAttemptsRef.current });
+          const offer = await pcRef.current.createOffer({ iceRestart: true });
+          await pcRef.current.setLocalDescription(offer);
+          wsRef.current?.send(JSON.stringify({ type: "offer", sdp: offer.sdp }));
+        } catch (e) {
+          console.error("ICE restart failed", e);
+        }
+      };
+
       pc.oniceconnectionstatechange = () => {
         console.log("ICE connection state:", pc.iceConnectionState);
-        if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
+        const state = pc.iceConnectionState;
+        if (state === "connected" || state === "completed") {
           console.log("ICE connected successfully");
+          iceRestartAttemptsRef.current = 0;
+          if (disconnectTimerRef.current) {
+            window.clearTimeout(disconnectTimerRef.current);
+            disconnectTimerRef.current = null;
+          }
+        } else if (state === "disconnected") {
+          console.log("ICE disconnected, will attempt restart in 10s if not recovered");
+          if (!disconnectTimerRef.current) {
+            disconnectTimerRef.current = window.setTimeout(() => {
+              if (pcRef.current?.iceConnectionState === "disconnected") {
+                console.log("Still disconnected after 10s, attempting ICE restart");
+                attemptIceRestart();
+              }
+            }, 10000);
+          }
+        } else if (state === "failed") {
+          console.log("ICE failed, attempting immediate restart");
+          attemptIceRestart();
         }
-        // Don't auto-disconnect on "failed" - WebRTC can recover from temporary failures
         // Only disconnect when user manually clicks "Next" or "Cancel"
       };
 
       if (isInitiator) {
-        const offer = await pc.createOffer();
+        console.log("Creating offer as initiator");
+        const offer = await pc.createOffer({
+          offerToReceiveAudio: true,
+          offerToReceiveVideo: false,
+        });
         await pc.setLocalDescription(offer);
+        console.log("Local description set, sending offer");
         if (wsRef.current?.readyState === WebSocket.OPEN) {
           wsRef.current.send(JSON.stringify({
             type: "offer",
             sdp: offer.sdp,
           }));
+        } else {
+          console.error("Cannot send offer, WebSocket not open");
         }
       }
     } catch (error) {
@@ -357,18 +477,26 @@ export default function VoiceChat() {
 
   const startChat = async () => {
     try {
+      console.log("Requesting microphone access...");
       // Request microphone permission before connecting
-      const stream = await navigator.mediaDevices.getUserMedia({ 
+      const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
-        }, 
-        video: false 
+        },
+        video: false
       });
+
+      // Ensure all tracks are enabled
+      stream.getAudioTracks().forEach(track => {
+        track.enabled = true;
+        console.log("Microphone track acquired:", track.label, "enabled:", track.enabled);
+      });
+
       localStreamRef.current = stream;
       setIsAudioEnabled(true);
-      
+
       // Now set up WebSocket connection
       setState("searching");
       setupWebSocket();
@@ -437,21 +565,28 @@ export default function VoiceChat() {
                   <p className="text-xs text-muted-foreground">Anonymous voice calls</p>
                 </div>
               </div>
-              {state === "connected" && (
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  onClick={toggleMute}
-                  className="glass-button"
-                  data-testid="button-mute"
-                >
-                  {isMuted ? (
-                    <VolumeX className="w-5 h-5 text-destructive" />
-                  ) : (
-                    <Volume2 className="w-5 h-5 text-accent" />
-                  )}
-                </Button>
-              )}
+              <div className="flex items-center gap-2">
+                {/* Compact dialer controls in header */}
+                {state === "idle" && (
+                  <Button size="sm" onClick={startChat} className="glass-button">Connect</Button>
+                )}
+                {(state === "searching" || state === "connecting") && (
+                  <Button size="sm" variant="outline" onClick={cancelSearch} className="glass-button-outline">Cancel</Button>
+                )}
+                {state === "connected" && (
+                  <>
+                    <Button size="sm" variant="secondary" onClick={nextChat} className="glass-button-secondary">Next</Button>
+                    <Button size="icon" variant="ghost" onClick={toggleMute} className="glass-button" data-testid="button-mute">
+                      {isMuted ? (
+                        <VolumeX className="w-5 h-5 text-destructive" />
+                      ) : (
+                        <Volume2 className="w-5 h-5 text-accent" />
+                      )}
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={cancelSearch} className="glass-button-outline">End</Button>
+                  </>
+                )}
+              </div>
             </div>
           </div>
         </header>
