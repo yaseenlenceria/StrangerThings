@@ -99,17 +99,25 @@ export default function VoiceChat() {
           }
 
           case "offer": {
-            console.log("Received offer from:", message.from);
+            console.log("=== RECEIVED OFFER ===");
+            console.log("From:", message.from);
+            console.log("SDP length:", message.sdp?.length);
+
             if (!pcRef.current) {
+              console.log("No peer connection yet, creating one...");
               setState("connecting");
               await setupPeerConnection(false);
             }
+
             if (pcRef.current) {
               try {
+                console.log("Setting remote description (offer)...");
                 await pcRef.current.setRemoteDescription(
                   new RTCSessionDescription({ type: "offer", sdp: message.sdp })
                 );
-                
+                console.log("✓ Remote description set");
+
+                // Flush buffered ICE candidates
                 if (iceCandidateBufferRef.current.length > 0) {
                   console.log(`Flushing ${iceCandidateBufferRef.current.length} buffered ICE candidates`);
                   for (const candidate of iceCandidateBufferRef.current) {
@@ -122,18 +130,18 @@ export default function VoiceChat() {
                   iceCandidateBufferRef.current = [];
                 }
                 
-                console.log("Creating answer");
-                const answer = await pcRef.current.createAnswer({
-                  offerToReceiveAudio: true,
-                  offerToReceiveVideo: false,
-                });
+                console.log("=== CREATING ANSWER ===");
+                const answer = await pcRef.current.createAnswer();
                 await pcRef.current.setLocalDescription(answer);
-                console.log("Sending answer");
+                console.log("Answer created:");
+                console.log("- Type:", answer.type);
+                console.log("- SDP length:", answer.sdp?.length);
+
                 ws.send(JSON.stringify({
                   type: "answer",
                   sdp: answer.sdp,
                 }));
-                console.log("Answer sent successfully");
+                console.log("✓ Answer sent successfully");
               } catch (err) {
                 console.error("Error handling offer:", err);
                 toast({
@@ -148,13 +156,19 @@ export default function VoiceChat() {
           }
 
           case "answer": {
-            console.log("Received answer from:", message.from);
+            console.log("=== RECEIVED ANSWER ===");
+            console.log("From:", message.from);
+            console.log("SDP length:", message.sdp?.length);
+
             if (pcRef.current) {
               try {
+                console.log("Setting remote description (answer)...");
                 await pcRef.current.setRemoteDescription(
                   new RTCSessionDescription({ type: "answer", sdp: message.sdp })
                 );
-                
+                console.log("✓ Remote description set");
+
+                // Flush buffered ICE candidates
                 if (iceCandidateBufferRef.current.length > 0) {
                   console.log(`Flushing ${iceCandidateBufferRef.current.length} buffered ICE candidates`);
                   for (const candidate of iceCandidateBufferRef.current) {
@@ -166,10 +180,10 @@ export default function VoiceChat() {
                   }
                   iceCandidateBufferRef.current = [];
                 }
-                
-                console.log("Answer processed successfully");
+
+                console.log("✓ Answer processed successfully");
               } catch (err) {
-                console.error("Error handling answer:", err);
+                console.error("✗ Error handling answer:", err);
               }
             }
             break;
@@ -271,13 +285,13 @@ export default function VoiceChat() {
       // Stream should already be acquired in startChat, but fallback just in case
       if (!localStreamRef.current) {
         console.warn("Stream not found, acquiring now...");
-        const stream = await navigator.mediaDevices.getUserMedia({ 
+        const stream = await navigator.mediaDevices.getUserMedia({
           audio: {
             echoCancellation: true,
             noiseSuppression: true,
             autoGainControl: true,
-          }, 
-          video: false 
+          },
+          video: false
         });
         localStreamRef.current = stream;
         setIsAudioEnabled(true);
@@ -305,18 +319,48 @@ export default function VoiceChat() {
         iceServers,
         bundlePolicy: "max-bundle",
         iceTransportPolicy: "all",
+        iceCandidatePoolSize: 10,
       };
 
       const pc = new RTCPeerConnection(configuration);
       pcRef.current = pc;
 
-      // Add local audio tracks
-      const tracks = localStreamRef.current.getTracks();
-      console.log(`Adding ${tracks.length} local tracks to peer connection`);
-      tracks.forEach(track => {
-        console.log(`Adding track: ${track.kind}, enabled: ${track.enabled}, muted: ${track.muted}`);
-        pc.addTrack(track, localStreamRef.current!);
-      });
+      // Add audio transceiver for bidirectional audio
+      const audioTrack = localStreamRef.current.getAudioTracks()[0];
+      if (audioTrack) {
+        console.log(`Adding audio track: ${audioTrack.label}, enabled: ${audioTrack.enabled}, readyState: ${audioTrack.readyState}`);
+
+        // Use addTransceiver for explicit control over media direction
+        const transceiver = pc.addTransceiver(audioTrack, {
+          direction: 'sendrecv',
+          streams: [localStreamRef.current],
+        });
+        console.log(`Audio transceiver added, direction: ${transceiver.direction}`);
+      } else {
+        throw new Error("No audio track available");
+      }
+
+      // Handle negotiation needed (for renegotiation scenarios)
+      pc.onnegotiationneeded = async () => {
+        console.log("=== NEGOTIATION NEEDED ===");
+        // Only renegotiate if we're the initiator and already have a remote description
+        if (isInitiator && pc.signalingState === "stable" && pc.remoteDescription) {
+          try {
+            console.log("Initiating renegotiation...");
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            if (wsRef.current?.readyState === WebSocket.OPEN) {
+              wsRef.current.send(JSON.stringify({
+                type: "offer",
+                sdp: offer.sdp,
+              }));
+              console.log("✓ Renegotiation offer sent");
+            }
+          } catch (e) {
+            console.error("✗ Renegotiation failed:", e);
+          }
+        }
+      };
 
       pc.onicecandidate = (event) => {
         if (event.candidate) {
@@ -335,52 +379,102 @@ export default function VoiceChat() {
       };
 
       pc.ontrack = (event) => {
-        console.log("Received remote track:", event.track.kind);
-        if (remoteAudioRef.current && event.streams[0]) {
-          console.log("Setting up remote audio stream");
-          remoteAudioRef.current.srcObject = event.streams[0];
-          remoteAudioRef.current.volume = 1.0;
-          remoteAudioRef.current.muted = false;
+        console.log("=== RECEIVED REMOTE TRACK ===");
+        console.log("Track kind:", event.track.kind);
+        console.log("Track id:", event.track.id);
+        console.log("Track enabled:", event.track.enabled);
+        console.log("Track muted:", event.track.muted);
+        console.log("Track readyState:", event.track.readyState);
+        console.log("Streams:", event.streams.length);
 
-          // Attempt to play audio
-          const playPromise = remoteAudioRef.current.play();
-          if (playPromise !== undefined) {
-            playPromise
-              .then(() => {
-                console.log("Remote audio playing successfully");
-                toast({
-                  title: "Connected!",
-                  description: "Audio call is active",
+        if (event.track.kind === "audio" && event.streams[0]) {
+          console.log("Setting up remote audio stream");
+
+          // Set up the audio element
+          if (remoteAudioRef.current) {
+            const audioElement = remoteAudioRef.current;
+            audioElement.srcObject = event.streams[0];
+            audioElement.volume = 1.0;
+            audioElement.muted = false;
+            audioElement.autoplay = true;
+
+            // Monitor track state
+            event.track.onended = () => console.log("Remote track ended");
+            event.track.onmute = () => console.log("Remote track muted");
+            event.track.onunmute = () => console.log("Remote track unmuted");
+
+            // Attempt to play audio
+            console.log("Attempting to play remote audio...");
+            const playPromise = audioElement.play();
+            if (playPromise !== undefined) {
+              playPromise
+                .then(() => {
+                  console.log("✓ Remote audio playing successfully!");
+                  toast({
+                    title: "Connected!",
+                    description: "Voice call is now active",
+                  });
+                })
+                .catch(err => {
+                  console.error("✗ Error playing remote audio:", err);
+                  toast({
+                    title: "Click to enable audio",
+                    description: "Browser blocked autoplay",
+                    variant: "destructive",
+                  });
+
+                  // Fallback: wait for user interaction
+                  const playAudio = () => {
+                    console.log("User interaction detected, trying to play audio...");
+                    if (remoteAudioRef.current) {
+                      remoteAudioRef.current.play()
+                        .then(() => console.log("✓ Audio started after user interaction"))
+                        .catch(e => console.error("✗ Still cannot play audio:", e));
+                    }
+                  };
+                  document.addEventListener('click', playAudio, { once: true });
                 });
-              })
-              .catch(err => {
-                console.error("Error playing remote audio:", err);
-                toast({
-                  title: "Audio blocked",
-                  description: "Click anywhere to enable audio",
-                  variant: "destructive",
-                });
-                const playAudio = () => {
-                  if (remoteAudioRef.current) {
-                    remoteAudioRef.current.play()
-                      .then(() => console.log("Audio started after user interaction"))
-                      .catch(e => console.error("Still cannot play audio:", e));
-                  }
-                };
-                document.addEventListener('click', playAudio, { once: true });
-              });
+            }
           }
           setState("connected");
         }
       };
 
       pc.onconnectionstatechange = () => {
-        console.log("Connection state:", pc.connectionState);
+        console.log("=== CONNECTION STATE CHANGED ===");
+        console.log("State:", pc.connectionState);
+        console.log("ICE state:", pc.iceConnectionState);
+        console.log("Signaling state:", pc.signalingState);
+
         if (pc.connectionState === "connected") {
+          console.log("✓ Peer connection established!");
           setState("connected");
+
+          // Log connection stats after 2 seconds
+          setTimeout(async () => {
+            if (pcRef.current) {
+              try {
+                const stats = await pcRef.current.getStats();
+                stats.forEach((report) => {
+                  if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+                    console.log("Audio receiving:", report.bytesReceived > 0);
+                    console.log("Packets received:", report.packetsReceived);
+                  }
+                  if (report.type === 'outbound-rtp' && report.kind === 'audio') {
+                    console.log("Audio sending:", report.bytesSent > 0);
+                    console.log("Packets sent:", report.packetsSent);
+                  }
+                });
+              } catch (e) {
+                console.error("Error getting stats:", e);
+              }
+            }
+          }, 2000);
+        } else if (pc.connectionState === "failed") {
+          console.error("✗ Connection failed");
+        } else if (pc.connectionState === "disconnected") {
+          console.warn("⚠ Connection disconnected");
         }
-        // Don't auto-disconnect on "failed" - let WebRTC try to recover
-        // Calls should stay connected until user manually clicks "Next" or "Cancel"
       };
 
       const attemptIceRestart = async () => {
@@ -425,21 +519,24 @@ export default function VoiceChat() {
       };
 
       if (isInitiator) {
-        console.log("Creating offer as initiator");
-        const offer = await pc.createOffer({
-          offerToReceiveAudio: true,
-          offerToReceiveVideo: false,
-        });
+        console.log("=== CREATING OFFER (Initiator) ===");
+        const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
-        console.log("Local description set, sending offer");
+        console.log("Local description set:");
+        console.log("- Type:", offer.type);
+        console.log("- SDP length:", offer.sdp?.length);
+
         if (wsRef.current?.readyState === WebSocket.OPEN) {
           wsRef.current.send(JSON.stringify({
             type: "offer",
             sdp: offer.sdp,
           }));
+          console.log("✓ Offer sent to peer");
         } else {
-          console.error("Cannot send offer, WebSocket not open");
+          console.error("✗ Cannot send offer, WebSocket not open");
         }
+      } else {
+        console.log("=== WAITING FOR OFFER (Non-initiator) ===");
       }
     } catch (error) {
       console.error("Error setting up peer connection:", error);
