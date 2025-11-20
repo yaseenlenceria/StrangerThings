@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Phone, PhoneOff, SkipForward, Loader2, Radio } from "lucide-react";
-import type { ConnectionState } from "@shared/schema";
+import { useToast } from "@/hooks/use-toast";
+import type { ConnectionState, WSMessage } from "@shared/schema";
 
 export default function VoiceChat() {
   const [state, setState] = useState<ConnectionState>("idle");
@@ -10,6 +11,8 @@ export default function VoiceChat() {
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement>(null);
+  const partnerIdRef = useRef<string | null>(null);
+  const { toast } = useToast();
 
   // Cleanup on unmount
   useEffect(() => {
@@ -27,21 +30,238 @@ export default function VoiceChat() {
       localStreamRef.current.getTracks().forEach(track => track.stop());
       localStreamRef.current = null;
     }
-    if (wsRef.current) {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "leave" }));
       wsRef.current.close();
       wsRef.current = null;
     }
+    partnerIdRef.current = null;
     setIsAudioEnabled(false);
+    setState("idle");
+  };
+
+  const setupWebSocket = () => {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${protocol}//${window.location.host}/ws`;
+    const ws = new WebSocket(wsUrl);
+
+    ws.onopen = () => {
+      console.log("WebSocket connected");
+      // Request to be matched
+      ws.send(JSON.stringify({ type: "match" }));
+    };
+
+    ws.onmessage = async (event) => {
+      try {
+        const message: WSMessage = JSON.parse(event.data);
+        
+        switch (message.type) {
+          case "match": {
+            console.log("Matched with partner:", message.partnerId, "initiator:", message.initiator);
+            partnerIdRef.current = message.partnerId;
+            setState("connecting");
+            // Only initiate if we're designated as the initiator
+            await setupPeerConnection(message.initiator);
+            break;
+          }
+
+          case "offer": {
+            console.log("Received offer from:", message.from);
+            // Guard: only setup peer connection if we don't already have one
+            if (!pcRef.current) {
+              setState("connecting");
+              await setupPeerConnection(false);
+            }
+            if (pcRef.current) {
+              await pcRef.current.setRemoteDescription(
+                new RTCSessionDescription({ type: "offer", sdp: message.sdp })
+              );
+              const answer = await pcRef.current.createAnswer();
+              await pcRef.current.setLocalDescription(answer);
+              ws.send(JSON.stringify({
+                type: "answer",
+                sdp: answer.sdp,
+              }));
+            }
+            break;
+          }
+
+          case "answer": {
+            console.log("Received answer from:", message.from);
+            if (pcRef.current) {
+              await pcRef.current.setRemoteDescription(
+                new RTCSessionDescription({ type: "answer", sdp: message.sdp })
+              );
+            }
+            break;
+          }
+
+          case "ice": {
+            console.log("Received ICE candidate from:", message.from);
+            if (pcRef.current && message.candidate) {
+              await pcRef.current.addIceCandidate(new RTCIceCandidate(message.candidate));
+            }
+            break;
+          }
+
+          case "next": {
+            console.log("Partner disconnected");
+            toast({
+              title: "Partner disconnected",
+              description: "Looking for someone new...",
+            });
+            resetForNext();
+            break;
+          }
+
+          case "error": {
+            console.error("Server error:", message.message);
+            toast({
+              title: "Error",
+              description: message.message,
+              variant: "destructive",
+            });
+            break;
+          }
+        }
+      } catch (error) {
+        console.error("Error handling WebSocket message:", error);
+      }
+    };
+
+    ws.onerror = (error) => {
+      console.error("WebSocket error:", error);
+      toast({
+        title: "Connection error",
+        description: "Failed to connect to server",
+        variant: "destructive",
+      });
+      cleanup();
+    };
+
+    ws.onclose = () => {
+      console.log("WebSocket closed");
+      if (state !== "idle") {
+        cleanup();
+      }
+    };
+
+    wsRef.current = ws;
+  };
+
+  const setupPeerConnection = async (isInitiator: boolean) => {
+    try {
+      // Get local audio stream
+      if (!localStreamRef.current) {
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          }, 
+          video: false 
+        });
+        localStreamRef.current = stream;
+        setIsAudioEnabled(true);
+      }
+
+      // Create peer connection
+      const configuration: RTCConfiguration = {
+        iceServers: [
+          { urls: "stun:stun.l.google.com:19302" },
+          { urls: "stun:stun1.l.google.com:19302" },
+        ],
+      };
+
+      const pc = new RTCPeerConnection(configuration);
+      pcRef.current = pc;
+
+      // Add local audio tracks
+      localStreamRef.current.getTracks().forEach(track => {
+        pc.addTrack(track, localStreamRef.current!);
+      });
+
+      // Handle ICE candidates
+      pc.onicecandidate = (event) => {
+        if (event.candidate && wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({
+            type: "ice",
+            candidate: event.candidate.toJSON(),
+          }));
+        }
+      };
+
+      // Handle remote stream
+      pc.ontrack = (event) => {
+        console.log("Received remote track");
+        if (remoteAudioRef.current && event.streams[0]) {
+          remoteAudioRef.current.srcObject = event.streams[0];
+          setState("connected");
+        }
+      };
+
+      // Handle connection state changes
+      pc.onconnectionstatechange = () => {
+        console.log("Connection state:", pc.connectionState);
+        if (pc.connectionState === "connected") {
+          setState("connected");
+        } else if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
+          toast({
+            title: "Connection lost",
+            description: "Trying to reconnect...",
+            variant: "destructive",
+          });
+          resetForNext();
+        }
+      };
+
+      // If initiator, create and send offer
+      if (isInitiator && wsRef.current?.readyState === WebSocket.OPEN) {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        wsRef.current.send(JSON.stringify({
+          type: "offer",
+          sdp: offer.sdp,
+        }));
+      }
+    } catch (error) {
+      console.error("Error setting up peer connection:", error);
+      toast({
+        title: "Microphone access denied",
+        description: "Please allow microphone access to use voice chat",
+        variant: "destructive",
+      });
+      cleanup();
+    }
+  };
+
+  const resetForNext = () => {
+    // Close peer connection
+    if (pcRef.current) {
+      pcRef.current.close();
+      pcRef.current = null;
+    }
+    
+    partnerIdRef.current = null;
+    setState("searching");
+
+    // Request new match
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "next" }));
+    }
   };
 
   const startChat = async () => {
-    // This will be implemented in the integration phase
-    console.log("Start chat clicked");
+    setState("searching");
+    setupWebSocket();
   };
 
   const nextChat = () => {
-    // This will be implemented in the integration phase
-    console.log("Next clicked");
+    resetForNext();
+  };
+
+  const cancelSearch = () => {
+    cleanup();
   };
 
   const getStatusText = () => {
@@ -124,7 +344,7 @@ export default function VoiceChat() {
                 size="lg"
                 variant="outline"
                 className="min-h-16 w-full md:w-auto md:min-w-64 text-xl font-medium"
-                onClick={cleanup}
+                onClick={cancelSearch}
                 data-testid="button-cancel"
               >
                 <PhoneOff className="mr-2 h-6 w-6" />

@@ -5,6 +5,7 @@ export const wsMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("match"),
     partnerId: z.string(),
+    initiator: z.boolean(),
   }),
   z.object({
     type: z.literal("offer"),

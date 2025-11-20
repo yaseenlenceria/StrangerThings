@@ -40,8 +40,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     client2.partnerId = id1;
 
     // Notify both clients of the match
-    sendToClient(id1, { type: "match", partnerId: id2 });
-    sendToClient(id2, { type: "match", partnerId: id1 });
+    // id1 (the one who just joined and matched) is the initiator
+    sendToClient(id1, { type: "match", partnerId: id2, initiator: true });
+    sendToClient(id2, { type: "match", partnerId: id1, initiator: false });
   };
 
   // Remove client from queue and partnerships
