@@ -1,21 +1,23 @@
-import { useState, useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Phone, PhoneOff, SkipForward, Loader2, Radio } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import type { ConnectionState, WSMessage } from "@shared/schema";
+import { Phone, PhoneOff, SkipForward, Volume2, VolumeX } from "lucide-react";
+
+type ConnectionState = "idle" | "searching" | "connecting" | "connected";
 
 export default function VoiceChat() {
   const [state, setState] = useState<ConnectionState>("idle");
   const [isAudioEnabled, setIsAudioEnabled] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement>(null);
   const partnerIdRef = useRef<string | null>(null);
   const iceCandidateBufferRef = useRef<RTCIceCandidate[]>([]);
+  const isIntentionalCloseRef = useRef(false);
   const { toast } = useToast();
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       cleanup();
@@ -31,12 +33,16 @@ export default function VoiceChat() {
       localStreamRef.current.getTracks().forEach(track => track.stop());
       localStreamRef.current = null;
     }
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: "leave" }));
+    if (wsRef.current) {
+      isIntentionalCloseRef.current = true;
+      // Only send leave if connection is open
+      if (wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: "leave" }));
+      }
+      // Always close the socket regardless of state
       wsRef.current.close();
       wsRef.current = null;
     }
-    // Clear ICE candidate buffer to prevent stale candidates
     iceCandidateBufferRef.current = [];
     partnerIdRef.current = null;
     setIsAudioEnabled(false);
@@ -50,27 +56,26 @@ export default function VoiceChat() {
 
     ws.onopen = () => {
       console.log("WebSocket connected");
-      // Request to be matched
+      // Request to be matched with a partner
       ws.send(JSON.stringify({ type: "match" }));
     };
 
     ws.onmessage = async (event) => {
       try {
-        const message: WSMessage = JSON.parse(event.data);
-        
+        const message = JSON.parse(event.data);
+        console.log("Received message:", message.type);
+
         switch (message.type) {
           case "match": {
-            console.log("Matched with partner:", message.partnerId, "initiator:", message.initiator);
+            console.log("Matched with partner:", message.partnerId);
             partnerIdRef.current = message.partnerId;
             setState("connecting");
-            // Only initiate if we're designated as the initiator
             await setupPeerConnection(message.initiator);
             break;
           }
 
           case "offer": {
             console.log("Received offer from:", message.from);
-            // Guard: only setup peer connection if we don't already have one
             if (!pcRef.current) {
               setState("connecting");
               await setupPeerConnection(false);
@@ -81,7 +86,6 @@ export default function VoiceChat() {
                   new RTCSessionDescription({ type: "offer", sdp: message.sdp })
                 );
                 
-                // Flush buffered ICE candidates
                 if (iceCandidateBufferRef.current.length > 0) {
                   console.log(`Flushing ${iceCandidateBufferRef.current.length} buffered ICE candidates`);
                   for (const candidate of iceCandidateBufferRef.current) {
@@ -122,7 +126,6 @@ export default function VoiceChat() {
                   new RTCSessionDescription({ type: "answer", sdp: message.sdp })
                 );
                 
-                // Flush buffered ICE candidates
                 if (iceCandidateBufferRef.current.length > 0) {
                   console.log(`Flushing ${iceCandidateBufferRef.current.length} buffered ICE candidates`);
                   for (const candidate of iceCandidateBufferRef.current) {
@@ -148,12 +151,10 @@ export default function VoiceChat() {
             if (pcRef.current && message.candidate) {
               try {
                 const candidate = new RTCIceCandidate(message.candidate);
-                // Only add ICE candidate if remote description is set
                 if (pcRef.current.remoteDescription) {
                   await pcRef.current.addIceCandidate(candidate);
                   console.log("ICE candidate added successfully");
                 } else {
-                  // Buffer ICE candidates until remote description is set
                   console.log("Buffering ICE candidate (remote description not yet set)");
                   iceCandidateBufferRef.current.push(candidate);
                 }
@@ -201,9 +202,32 @@ export default function VoiceChat() {
 
     ws.onclose = () => {
       console.log("WebSocket closed");
-      if (state !== "idle") {
-        cleanup();
+      
+      // Check if this was an intentional close (from cleanup)
+      if (isIntentionalCloseRef.current) {
+        isIntentionalCloseRef.current = false;
+        return;
       }
+      
+      // Unexpected close - clean up and show error
+      if (pcRef.current) {
+        pcRef.current.close();
+        pcRef.current = null;
+      }
+      iceCandidateBufferRef.current = [];
+      partnerIdRef.current = null;
+      wsRef.current = null;
+      
+      // Use functional state update to get current state
+      setState((currentState) => {
+        if (currentState !== "idle") {
+          toast({
+            title: "Connection lost",
+            description: "Please try connecting again",
+          });
+        }
+        return "idle";
+      });
     };
 
     wsRef.current = ws;
@@ -211,8 +235,9 @@ export default function VoiceChat() {
 
   const setupPeerConnection = async (isInitiator: boolean) => {
     try {
-      // Get local audio stream
+      // Stream should already be acquired in startChat, but fallback just in case
       if (!localStreamRef.current) {
+        console.warn("Stream not found, acquiring now...");
         const stream = await navigator.mediaDevices.getUserMedia({ 
           audio: {
             echoCancellation: true,
@@ -225,7 +250,6 @@ export default function VoiceChat() {
         setIsAudioEnabled(true);
       }
 
-      // Create peer connection
       const configuration: RTCConfiguration = {
         iceServers: [
           { urls: "stun:stun.l.google.com:19302" },
@@ -236,12 +260,10 @@ export default function VoiceChat() {
       const pc = new RTCPeerConnection(configuration);
       pcRef.current = pc;
 
-      // Add local audio tracks
       localStreamRef.current.getTracks().forEach(track => {
         pc.addTrack(track, localStreamRef.current!);
       });
 
-      // Handle ICE candidates
       pc.onicecandidate = (event) => {
         if (event.candidate && wsRef.current?.readyState === WebSocket.OPEN) {
           wsRef.current.send(JSON.stringify({
@@ -251,28 +273,26 @@ export default function VoiceChat() {
         }
       };
 
-      // Handle remote stream
       pc.ontrack = (event) => {
         console.log("Received remote track");
         if (remoteAudioRef.current && event.streams[0]) {
           remoteAudioRef.current.srcObject = event.streams[0];
-          // Ensure audio plays
           remoteAudioRef.current.play().catch(err => {
             console.error("Error playing remote audio:", err);
-            // Try again after user interaction
             toast({
               title: "Audio ready",
-              description: "Click anywhere to enable audio",
+              description: "Click to unmute audio",
             });
-            document.addEventListener('click', () => {
+            const playAudio = () => {
               remoteAudioRef.current?.play();
-            }, { once: true });
+              document.removeEventListener('click', playAudio);
+            };
+            document.addEventListener('click', playAudio, { once: true });
           });
           setState("connected");
         }
       };
 
-      // Handle connection state changes
       pc.onconnectionstatechange = () => {
         console.log("Connection state:", pc.connectionState);
         if (pc.connectionState === "connected") {
@@ -286,10 +306,8 @@ export default function VoiceChat() {
           });
           resetForNext();
         }
-        // Note: "disconnected" is a temporary state, don't reset on it
       };
 
-      // Monitor ICE connection state (more reliable than connection state)
       pc.oniceconnectionstatechange = () => {
         console.log("ICE connection state:", pc.iceConnectionState);
         if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
@@ -305,20 +323,21 @@ export default function VoiceChat() {
         }
       };
 
-      // If initiator, create and send offer
-      if (isInitiator && wsRef.current?.readyState === WebSocket.OPEN) {
+      if (isInitiator) {
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
-        wsRef.current.send(JSON.stringify({
-          type: "offer",
-          sdp: offer.sdp,
-        }));
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({
+            type: "offer",
+            sdp: offer.sdp,
+          }));
+        }
       }
     } catch (error) {
       console.error("Error setting up peer connection:", error);
       toast({
-        title: "Microphone access denied",
-        description: "Please allow microphone access to use voice chat",
+        title: "Microphone error",
+        description: "Please allow microphone access to continue",
         variant: "destructive",
       });
       cleanup();
@@ -326,27 +345,54 @@ export default function VoiceChat() {
   };
 
   const resetForNext = () => {
-    // Close peer connection
     if (pcRef.current) {
       pcRef.current.close();
       pcRef.current = null;
     }
     
-    // Clear ICE candidate buffer
     iceCandidateBufferRef.current = [];
-    
     partnerIdRef.current = null;
-    setState("searching");
 
-    // Request new match
+    // Check WebSocket state before sending
     if (wsRef.current?.readyState === WebSocket.OPEN) {
+      setState("searching");
       wsRef.current.send(JSON.stringify({ type: "next" }));
+    } else {
+      // WebSocket is closed, reset to idle and let user retry
+      toast({
+        title: "Connection lost",
+        description: "Please start a new chat",
+      });
+      setState("idle");
     }
   };
 
   const startChat = async () => {
-    setState("searching");
-    setupWebSocket();
+    try {
+      // Request microphone permission before connecting
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        }, 
+        video: false 
+      });
+      localStreamRef.current = stream;
+      setIsAudioEnabled(true);
+      
+      // Now set up WebSocket connection
+      setState("searching");
+      setupWebSocket();
+    } catch (error) {
+      console.error("Error accessing microphone:", error);
+      toast({
+        title: "Microphone access required",
+        description: "Please allow microphone access to use voice chat",
+        variant: "destructive",
+      });
+      setState("idle");
+    }
   };
 
   const nextChat = () => {
@@ -355,6 +401,13 @@ export default function VoiceChat() {
 
   const cancelSearch = () => {
     cleanup();
+  };
+
+  const toggleMute = () => {
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.muted = !remoteAudioRef.current.muted;
+      setIsMuted(!isMuted);
+    }
   };
 
   const getStatusText = () => {
@@ -372,69 +425,85 @@ export default function VoiceChat() {
     }
   };
 
-  const getStatusIcon = () => {
-    switch (state) {
-      case "idle":
-        return <Phone className="w-12 h-12 text-primary" />;
-      case "searching":
-        return <Loader2 className="w-12 h-12 text-primary animate-spin" />;
-      case "connecting":
-        return <Loader2 className="w-12 h-12 text-primary animate-spin" />;
-      case "connected":
-        return <Radio className="w-12 h-12 text-primary animate-pulse" />;
-      default:
-        return <Phone className="w-12 h-12 text-primary" />;
-    }
-  };
-
   return (
-    <div className="min-h-screen bg-background flex flex-col">
-      {/* Header */}
-      <header className="border-b border-border bg-card">
-        <div className="container mx-auto px-4 py-6">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-3">
-              <div className="flex items-center justify-center w-10 h-10 rounded-md bg-primary">
-                <Phone className="w-6 h-6 text-primary-foreground" />
+    <div className="relative min-h-screen bg-background flex flex-col overflow-hidden">
+      {/* Aurora Background */}
+      <div className="fixed inset-0 overflow-hidden pointer-events-none">
+        <div className="aurora-blob aurora-blob-1" />
+        <div className="aurora-blob aurora-blob-2" />
+        <div className="aurora-blob aurora-blob-3" />
+      </div>
+
+      {/* Content */}
+      <div className="relative z-10 flex-1 flex flex-col">
+        {/* Header */}
+        <header className="backdrop-blur-md bg-background/30 border-b border-white/10">
+          <div className="container mx-auto px-6 py-4 md:py-6">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-3">
+                <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-primary/20 border border-primary/30">
+                  <Phone className="w-5 h-5 text-primary" />
+                </div>
+                <div>
+                  <h1 className="text-xl font-bold text-foreground tracking-tight">Stranger Voice</h1>
+                  <p className="text-xs text-muted-foreground">Anonymous voice calls</p>
+                </div>
               </div>
-              <div>
-                <h1 className="text-xl font-semibold text-foreground">Stranger Voice</h1>
-                <p className="text-xs text-muted-foreground">Connect with random people</p>
-              </div>
-            </div>
-            <div className="hidden md:flex items-center space-x-2 text-sm text-muted-foreground">
-              <Radio className="w-4 h-4" />
-              <span>{state === "connected" ? "Live" : "Ready"}</span>
+              {state === "connected" && (
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  onClick={toggleMute}
+                  className="glass-button"
+                  data-testid="button-mute"
+                >
+                  {isMuted ? (
+                    <VolumeX className="w-5 h-5 text-destructive" />
+                  ) : (
+                    <Volume2 className="w-5 h-5 text-accent" />
+                  )}
+                </Button>
+              )}
             </div>
           </div>
-        </div>
-      </header>
+        </header>
 
-      {/* Main Content - Centered */}
-      <div className="flex-1 flex items-center justify-center p-4 bg-gradient-to-b from-background to-muted/20">
-        <div className="w-full max-w-lg">
-          {/* Dialer Card */}
-          <div className="bg-card border border-card-border rounded-lg shadow-lg p-8 md:p-12">
-            <div className="flex flex-col items-center space-y-8">
-              {/* Status Icon with Circle Background */}
-              <div className="relative">
-                <div className={`absolute inset-0 rounded-full ${state === "connected" ? "bg-primary/10 animate-pulse" : "bg-muted"} blur-xl`}></div>
-                <div className="relative flex items-center justify-center w-24 h-24 rounded-full bg-primary/10 border-2 border-primary/20">
-                  {getStatusIcon()}
+        {/* Main Content - Hero */}
+        <div className="flex-1 flex items-center justify-center p-6 md:p-8">
+          <div className="w-full max-w-2xl">
+            <div className="flex flex-col items-center space-y-8 md:space-y-12">
+              {/* Animated Connection Orb */}
+              <div className="relative flex items-center justify-center">
+                {/* Pulsing Rings - Searching State */}
+                {state === "searching" && (
+                  <>
+                    <div className="pulse-ring pulse-ring-1" />
+                    <div className="pulse-ring pulse-ring-2" />
+                    <div className="pulse-ring pulse-ring-3" />
+                  </>
+                )}
+
+                {/* Main Orb */}
+                <div className={`
+                  connection-orb
+                  ${state === "idle" ? "orb-idle" : ""}
+                  ${state === "searching" ? "orb-searching" : ""}
+                  ${state === "connecting" ? "orb-connecting" : ""}
+                  ${state === "connected" ? "orb-connected" : ""}
+                `}>
+                  <Phone className="w-16 h-16 md:w-20 md:h-20 text-white/90" />
                 </div>
               </div>
 
-              {/* Soundwave Visualization - Only show when connected */}
+              {/* Soundwave Visualization - Connected State */}
               {state === "connected" && (
-                <div className="flex items-center justify-center space-x-2 h-16" data-testid="soundwave-visualization">
-                  {[...Array(5)].map((_, i) => (
+                <div className="flex items-end justify-center space-x-2 h-20" data-testid="soundwave-visualization">
+                  {[1, 2, 3, 4, 5, 6, 7].map((i) => (
                     <div
                       key={i}
-                      className="w-3 bg-primary rounded-full animate-soundwave"
+                      className="soundwave-bar"
                       style={{
-                        height: "100%",
-                        animationDelay: `${i * 0.1}s`,
-                        animationDuration: "1s",
+                        animationDelay: `${i * 0.15}s`,
                       }}
                     />
                   ))}
@@ -442,24 +511,29 @@ export default function VoiceChat() {
               )}
 
               {/* Status Text */}
-              <div className="text-center space-y-2">
-                <h2 className="text-4xl md:text-5xl font-semibold text-foreground" data-testid="text-status">
+              <div className="text-center space-y-3">
+                <h2 className="text-4xl md:text-5xl lg:text-6xl font-bold text-foreground tracking-tight" data-testid="text-status">
                   {getStatusText()}
                 </h2>
                 {state === "idle" && (
-                  <p className="text-sm text-muted-foreground">
-                    Click below to start talking with a random stranger
+                  <p className="text-sm md:text-base text-muted-foreground max-w-md mx-auto">
+                    Click below to start an anonymous voice conversation with a random stranger
+                  </p>
+                )}
+                {state === "searching" && (
+                  <p className="text-sm md:text-base text-muted-foreground animate-pulse" data-testid="text-hint">
+                    Waiting for someone to join...
                   </p>
                 )}
               </div>
 
-              {/* Action Buttons */}
-              <div className="flex flex-col items-center space-y-4 w-full pt-4">
-                {/* Start/Stop Button */}
+              {/* Glass Card with Actions */}
+              <div className="glass-card w-full max-w-md p-8 space-y-6">
+                {/* Primary Action Button */}
                 {state === "idle" ? (
                   <Button
                     size="lg"
-                    className="min-h-16 w-full text-xl font-medium shadow-lg hover:shadow-xl transition-shadow"
+                    className="w-full min-h-16 text-xl font-semibold shadow-lg shadow-primary/25 hover:shadow-xl hover:shadow-primary/30 transition-all duration-300"
                     onClick={startChat}
                     data-testid="button-start-chat"
                   >
@@ -470,7 +544,7 @@ export default function VoiceChat() {
                   <Button
                     size="lg"
                     variant="outline"
-                    className="min-h-16 w-full text-xl font-medium"
+                    className="w-full min-h-16 text-xl font-semibold glass-button-outline"
                     onClick={cancelSearch}
                     data-testid="button-cancel"
                   >
@@ -479,12 +553,12 @@ export default function VoiceChat() {
                   </Button>
                 ) : null}
 
-                {/* Next Button - Only show when connected */}
+                {/* Next Button - Connected State */}
                 {state === "connected" && (
                   <Button
                     size="default"
                     variant="secondary"
-                    className="min-h-14 w-full text-lg font-medium"
+                    className="w-full min-h-14 text-lg font-semibold glass-button-secondary"
                     onClick={nextChat}
                     data-testid="button-next"
                   >
@@ -492,78 +566,288 @@ export default function VoiceChat() {
                     Next Stranger
                   </Button>
                 )}
+
+                {/* Status Indicator */}
+                {state === "connected" && (
+                  <div className="flex items-center justify-center space-x-2 text-sm font-medium">
+                    <div className="w-2 h-2 rounded-full bg-accent animate-pulse shadow-lg shadow-accent/50"></div>
+                    <span className="text-accent">Call Active</span>
+                  </div>
+                )}
               </div>
 
-              {/* Connection hint */}
-              {state === "searching" && (
-                <p className="text-muted-foreground text-center text-sm animate-pulse" data-testid="text-hint">
-                  Waiting for someone to join...
-                </p>
-              )}
-
-              {state === "connected" && (
-                <div className="flex items-center space-x-2 text-sm text-green-600 dark:text-green-400">
-                  <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
-                  <span className="font-medium">Call Active</span>
+              {/* Privacy Badge */}
+              <div className="flex items-center justify-center gap-6 text-xs text-muted-foreground">
+                <div className="flex items-center gap-2">
+                  <div className="w-1.5 h-1.5 rounded-full bg-accent"></div>
+                  <span>Anonymous</span>
                 </div>
-              )}
+                <div className="flex items-center gap-2">
+                  <div className="w-1.5 h-1.5 rounded-full bg-primary"></div>
+                  <span>Encrypted</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-1.5 h-1.5 rounded-full bg-chart-3"></div>
+                  <span>No Recording</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
+
+        {/* Footer */}
+        <footer className="backdrop-blur-md bg-background/20 border-t border-white/10">
+          <div className="container mx-auto px-6 py-6 md:py-8">
+            <div className="flex flex-col md:flex-row items-center justify-between gap-4 text-center md:text-left">
+              <div>
+                <p className="text-sm text-muted-foreground">
+                  Connect with strangers worldwide through instant voice calls
+                </p>
+                <p className="text-xs text-muted-foreground/80 mt-1">
+                  Powered by WebRTC • Peer-to-peer technology
+                </p>
+              </div>
+            </div>
+          </div>
+        </footer>
       </div>
 
-      {/* Footer */}
-      <footer className="border-t border-border bg-card">
-        <div className="container mx-auto px-4 py-8">
-          <div className="flex flex-col md:flex-row items-center justify-between gap-4">
-            <div className="text-center md:text-left">
-              <p className="text-sm text-muted-foreground">
-                Connect with strangers worldwide through instant voice calls
-              </p>
-              <p className="text-xs text-muted-foreground mt-1">
-                Anonymous • Secure • Peer-to-peer
-              </p>
-            </div>
-            <div className="flex items-center space-x-6 text-xs text-muted-foreground">
-              <div className="flex items-center space-x-2">
-                <div className="w-2 h-2 rounded-full bg-green-500"></div>
-                <span>Audio Only</span>
-              </div>
-              <div className="flex items-center space-x-2">
-                <div className="w-2 h-2 rounded-full bg-blue-500"></div>
-                <span>WebRTC</span>
-              </div>
-              <div className="flex items-center space-x-2">
-                <div className="w-2 h-2 rounded-full bg-purple-500"></div>
-                <span>No Recording</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </footer>
-
-      {/* Hidden audio element for remote stream */}
+      {/* Audio element for remote stream */}
       <audio 
         ref={remoteAudioRef} 
         autoPlay 
         playsInline
-        controls={false}
-        style={{ display: 'none' }}
         data-testid="audio-remote" 
       />
 
-      {/* Soundwave animation styles */}
+      {/* Styles */}
       <style>{`
-        @keyframes soundwave {
+        /* Aurora Background Animation */
+        .aurora-blob {
+          position: absolute;
+          border-radius: 50%;
+          filter: blur(80px);
+          opacity: 0.3;
+          animation: aurora-drift 30s ease-in-out infinite;
+        }
+
+        .aurora-blob-1 {
+          width: 600px;
+          height: 600px;
+          background: radial-gradient(circle, hsl(217, 91%, 55%), transparent);
+          top: -10%;
+          left: -10%;
+          animation-duration: 35s;
+        }
+
+        .aurora-blob-2 {
+          width: 500px;
+          height: 500px;
+          background: radial-gradient(circle, hsl(180, 85%, 45%), transparent);
+          bottom: -10%;
+          right: -10%;
+          animation-duration: 40s;
+          animation-delay: -10s;
+        }
+
+        .aurora-blob-3 {
+          width: 550px;
+          height: 550px;
+          background: radial-gradient(circle, hsl(280, 65%, 55%), transparent);
+          top: 40%;
+          left: 50%;
+          transform: translate(-50%, -50%);
+          animation-duration: 45s;
+          animation-delay: -20s;
+        }
+
+        @keyframes aurora-drift {
           0%, 100% {
-            transform: scaleY(0.3);
+            transform: translate(0, 0) scale(1);
           }
-          50% {
-            transform: scaleY(1);
+          33% {
+            transform: translate(30px, -30px) scale(1.1);
+          }
+          66% {
+            transform: translate(-30px, 30px) scale(0.9);
           }
         }
-        .animate-soundwave {
-          animation: soundwave 1s ease-in-out infinite;
+
+        /* Glassmorphism */
+        .glass-card {
+          background: rgba(255, 255, 255, 0.05);
+          backdrop-filter: blur(20px);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          border-radius: 1.5rem;
+          box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        }
+
+        .glass-button {
+          background: rgba(255, 255, 255, 0.1);
+          backdrop-filter: blur(10px);
+          border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .glass-button-outline {
+          background: rgba(255, 255, 255, 0.05);
+          backdrop-filter: blur(10px);
+          border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .glass-button-secondary {
+          background: rgba(180, 230, 240, 0.1);
+          backdrop-filter: blur(10px);
+          border: 1px solid hsl(var(--accent) / 0.3);
+        }
+
+        /* Connection Orb */
+        .connection-orb {
+          position: relative;
+          width: 240px;
+          height: 240px;
+          display: flex;
+          align-items: center;
+          justify-center;
+          border-radius: 50%;
+          transition: all 600ms ease;
+        }
+
+        @media (min-width: 768px) {
+          .connection-orb {
+            width: 320px;
+            height: 320px;
+          }
+        }
+
+        .orb-idle {
+          background: radial-gradient(circle, hsl(180, 85%, 45%) 0%, hsl(180, 85%, 35%) 100%);
+          box-shadow: 0 0 60px hsl(180, 85%, 45% / 0.3);
+        }
+
+        .orb-searching {
+          background: radial-gradient(circle, hsl(217, 91%, 55%) 0%, hsl(217, 91%, 45%) 100%);
+          box-shadow: 0 0 80px hsl(217, 91%, 55% / 0.5);
+          animation: orb-pulse 2s ease-in-out infinite;
+        }
+
+        .orb-connecting {
+          background: radial-gradient(circle, hsl(217, 91%, 60%) 0%, hsl(217, 91%, 50%) 100%);
+          box-shadow: 0 0 100px hsl(217, 91%, 55% / 0.6);
+          animation: orb-pulse-fast 1s ease-in-out infinite;
+        }
+
+        .orb-connected {
+          background: radial-gradient(circle, hsl(180, 85%, 50%) 0%, hsl(180, 85%, 40%) 100%);
+          box-shadow: 0 0 100px hsl(180, 85%, 45% / 0.6);
+          animation: orb-breathe 3s ease-in-out infinite;
+        }
+
+        @keyframes orb-pulse {
+          0%, 100% {
+            transform: scale(1);
+          }
+          50% {
+            transform: scale(1.05);
+          }
+        }
+
+        @keyframes orb-pulse-fast {
+          0%, 100% {
+            transform: scale(1);
+          }
+          50% {
+            transform: scale(1.08);
+          }
+        }
+
+        @keyframes orb-breathe {
+          0%, 100% {
+            transform: scale(1);
+            box-shadow: 0 0 100px hsl(180, 85%, 45% / 0.6);
+          }
+          50% {
+            transform: scale(1.02);
+            box-shadow: 0 0 120px hsl(180, 85%, 45% / 0.8);
+          }
+        }
+
+        /* Pulsing Rings */
+        .pulse-ring {
+          position: absolute;
+          border: 2px solid hsl(217, 91%, 55%);
+          border-radius: 50%;
+          animation: ring-pulse 1.5s ease-out infinite;
+        }
+
+        .pulse-ring-1 {
+          width: 240px;
+          height: 240px;
+          animation-delay: 0s;
+        }
+
+        .pulse-ring-2 {
+          width: 240px;
+          height: 240px;
+          animation-delay: 0.5s;
+        }
+
+        .pulse-ring-3 {
+          width: 240px;
+          height: 240px;
+          animation-delay: 1s;
+        }
+
+        @media (min-width: 768px) {
+          .pulse-ring-1, .pulse-ring-2, .pulse-ring-3 {
+            width: 320px;
+            height: 320px;
+          }
+        }
+
+        @keyframes ring-pulse {
+          0% {
+            transform: scale(1);
+            opacity: 0.6;
+          }
+          100% {
+            transform: scale(2);
+            opacity: 0;
+          }
+        }
+
+        /* Soundwave Bars */
+        .soundwave-bar {
+          width: 6px;
+          background: linear-gradient(to top, hsl(180, 85%, 45%), hsl(217, 91%, 55%));
+          border-radius: 3px;
+          animation: soundwave 0.8s ease-in-out infinite;
+        }
+
+        @keyframes soundwave {
+          0%, 100% {
+            height: 20px;
+          }
+          50% {
+            height: 60px;
+          }
+        }
+
+        .soundwave-bar:nth-child(1) { animation-delay: 0s; }
+        .soundwave-bar:nth-child(2) { animation-delay: 0.1s; }
+        .soundwave-bar:nth-child(3) { animation-delay: 0.2s; }
+        .soundwave-bar:nth-child(4) { animation-delay: 0.3s; }
+        .soundwave-bar:nth-child(5) { animation-delay: 0.2s; }
+        .soundwave-bar:nth-child(6) { animation-delay: 0.1s; }
+        .soundwave-bar:nth-child(7) { animation-delay: 0s; }
+
+        /* Reduced motion support */
+        @media (prefers-reduced-motion: reduce) {
+          .aurora-blob,
+          .connection-orb,
+          .pulse-ring,
+          .soundwave-bar {
+            animation: none !important;
+          }
         }
       `}</style>
     </div>

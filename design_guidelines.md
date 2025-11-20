@@ -1,97 +1,130 @@
 # Design Guidelines: Stranger Voice Call WebApp
 
 ## Design Approach
-**Utility-Focused, Minimalist Design System**
-This is a single-purpose utility app focused on instant connection. Design should be clean, modern, and distraction-free with emphasis on functionality over decoration.
+**Cinematic Utility Design with Futuristic Aesthetics**
+Reference-based approach inspired by modern voice/communication apps (Discord, Clubhouse) with cinematic sci-fi interfaces. Dark, immersive experience that makes voice connection feel like entering a futuristic space.
 
 ## Core Design Principles
-- **Immediate clarity**: User should instantly understand the single action available
-- **Status transparency**: Connection state must be continuously visible
-- **Touch-first**: All interactive elements optimized for mobile touch targets
-- **Minimal distractions**: No unnecessary visual elements competing for attention
+- **Cinematic immersion**: Full-height layouts with depth through layering and gradients
+- **Visual feedback**: Every state transition is accompanied by smooth animations
+- **Dark-first**: Deep backgrounds with glowing accents create focus
+- **Touch-optimized**: 44px minimum touch targets, generous spacing for mobile
+
+## Colors
+- **Background**: Deep navy (#040712) with layered radial gradients
+- **Primary**: Electric blue (#2563EB) for buttons and active states
+- **Accent**: Teal for secondary elements and state indicators
+- **Glass effects**: White/blue with 10-20% opacity for glassmorphism
 
 ## Typography
-- **Headline (Status)**: text-2xl to text-4xl, font-semibold, center-aligned
-- **Button Text**: text-lg to text-xl, font-medium
-- **Body/Footer**: text-sm to text-base, regular weight
-- **Font Stack**: System fonts (sans-serif) for instant load
+- **Font Family**: Geometric sans-serif (Inter, Manrope, or DM Sans)
+- **Status Headlines**: text-3xl to text-5xl, font-bold, tracking-tight
+- **Button Text**: text-lg to text-xl, font-semibold, uppercase letter-spacing
+- **Body**: text-sm to text-base, font-normal
+- **Hierarchy**: Large headlines (48-72px desktop), generous line-height (1.2-1.4)
 
 ## Layout System
-- **Spacing Units**: Tailwind units of 4, 6, 8, 12, 16 for consistent rhythm
-- **Container**: Centered vertical layout, max-width 480px for mobile-first
-- **Vertical Centering**: Use flexbox to center main content vertically on viewport
+- **Spacing**: Tailwind units of 4, 8, 12, 16, 24 for vertical rhythm
+- **Container**: Full viewport height (min-h-screen), centered content
+- **Max Width**: 560px for main content area on desktop
+- **Padding**: px-6 mobile, px-8 desktop
 
 ## Component Library
 
+### Aurora Background Animation
+- **Implementation**: 3-4 layered radial gradients (blue, teal, purple)
+- **Animation**: Slow drift and scale (20-40s duration), continuous loop
+- **Position**: Fixed, full viewport, z-index below content
+- **Blur**: Apply backdrop-blur-3xl for depth effect
+
+### Animated Connection Orb
+- **Idle State**: Single static circle, subtle glow, teal color
+- **Searching State**: Pulsing animation (scale 1 to 1.2), rotating outer rings (2-3 rings)
+- **Connecting State**: Rapid pulse, color shift to electric blue
+- **Connected State**: Stable glow with gentle breathing animation, multiple orbiting particles
+- **Size**: 200-280px diameter on mobile, 300-400px desktop
+- **Position**: Center of viewport, above status text
+
+### Glassmorphism Cards
+- **Background**: Backdrop blur with semi-transparent white/blue (bg-white/10)
+- **Border**: 1px solid with white/20 opacity
+- **Shadow**: Large, colored glow matching state (blue for active)
+- **Padding**: p-8 to p-12
+- **Border Radius**: rounded-2xl to rounded-3xl
+
 ### Primary Button ("Start Chat")
-- **Size**: Very large - min-h-16 to min-h-20, full-width on mobile, min-w-64 on desktop
-- **Typography**: Bold, uppercase or sentence case, 18-20px
-- **States**: Clear hover, active, and disabled states
-- **Positioning**: Centered, prominent placement
+- **Size**: min-h-16, min-w-72 desktop, full-width mobile with max-w-md
+- **Background**: Electric blue (#2563EB) with gradient overlay
+- **Glass Effect**: Semi-transparent backdrop with blur
+- **Typography**: Uppercase, font-semibold, text-lg
+- **Glow**: Box-shadow with blue spread for depth
+- **States**: Hover lifts (translateY -2px), active scales (0.98)
 
 ### Secondary Button ("Next")
-- **Size**: Medium - min-h-12 to min-h-14, slightly smaller than primary
-- **Visibility**: Hidden by default, shown only when connected
-- **Position**: Below status indicator
+- **Size**: min-h-14, same width constraints as primary
+- **Style**: Outlined ghost button with glassmorphism
+- **Border**: 2px solid teal with glow
+- **Background**: Blurred backdrop, minimal fill
+- **Position**: mt-6 below primary button
 
-### Status Indicator
-- **Display**: Large, centered text with icon/animation
-- **States**: 
-  - Idle: Neutral, inviting
-  - Searching: Animated (pulsing dot or spinner)
-  - Connecting: Progress indicator
-  - Connected: Success state with checkmark or active indicator
-- **Animation**: Smooth transitions between states (300ms)
+### Pulsing Rings (Searching State)
+- **Structure**: 3 concentric circles expanding outward
+- **Animation**: Scale from 1 to 2, fade out, staggered timing (0.4s intervals)
+- **Color**: Electric blue with decreasing opacity
+- **Position**: Absolute positioned around central orb
 
-### Soundwave Visualization
-- **Type**: Simple CSS animation bars (3-5 vertical bars)
-- **Behavior**: Animate when connected, static when idle
-- **Position**: Above or beside status text
-- **Style**: Minimalist, single color, gentle movement
-
-### Footer
-- **Content**: Minimal - app name or tagline
-- **Position**: Bottom of viewport, small text
-- **Padding**: py-6 to py-8
+### Soundwave Visualization (Connected)
+- **Type**: 5-7 vertical bars, uneven heights
+- **Animation**: Randomized height changes (100-600ms intervals)
+- **Color**: Gradient from blue to teal
+- **Position**: Below orb, horizontally centered
+- **Size**: Each bar 4-6px wide, spacing of 2-3px
 
 ## Visual Hierarchy
-1. **Primary**: Start Chat button (largest visual element)
-2. **Secondary**: Status text with animation
-3. **Tertiary**: Next button (when visible)
-4. **Quaternary**: Footer information
+1. **Animated Orb**: Largest, central focal point
+2. **Status Text**: Below orb, highly visible
+3. **Primary Button**: Strong color contrast, prominent size
+4. **Secondary Elements**: Soundwave, rings, next button
+5. **Footer**: Minimal presence, bottom-aligned
 
 ## Responsive Behavior
-- **Mobile (default)**: Single column, full-width buttons with px-4 spacing
-- **Desktop (md:)**: Centered card-like container, max-width buttons
-- **Touch Targets**: Minimum 44px height for all interactive elements
+- **Mobile**: Full-width layout, px-6 padding, orb 240px
+- **Tablet (md:)**: Increased spacing, orb 320px
+- **Desktop (lg:)**: Max-width container, orb 380px, increased text sizes
 
 ## Animations
-- **Status transitions**: Fade in/out (200-300ms)
-- **Button states**: Subtle scale on press (transform: scale(0.98))
-- **Soundwave**: Continuous gentle animation when active
-- **Loading state**: Simple spinner or pulsing indicator
+- **Aurora Background**: 30-40s continuous drift, smooth easing
+- **Orb Pulse**: 2s duration, ease-in-out, infinite loop when searching
+- **Ring Expansion**: 1.5s scale animation with fade-out
+- **State Transitions**: 400-600ms for color shifts and scale changes
+- **Soundwave**: Randomized 300-800ms intervals per bar
+- **Button Interactions**: 200ms transforms, subtle scale/lift
 
 ## Layout Structure
 ```
-Viewport (full height)
-└── Centered Container
-    ├── Soundwave Visualization (when connected)
-    ├── Status Text (large, prominent)
-    ├── Start Chat Button (primary action)
-    ├── Next Button (conditional, below primary)
-    └── Footer (bottom-aligned)
+Full Viewport Container
+├── Aurora Background (fixed, animated gradients)
+├── Centered Content Area (max-w-2xl)
+│   ├── Animated Orb (connection state visual)
+│   ├── Status Text (large, centered)
+│   ├── Glassmorphism Card (on desktop)
+│   │   ├── Primary Button
+│   │   └── Secondary Button (conditional)
+│   └── Soundwave Visualization (when connected)
+└── Footer (minimal, bottom-aligned)
 ```
 
-## Images
-**No images required** - This is a utility app focused on functionality. All visual interest comes from clean typography, status animations, and the soundwave visualization.
+## State-Specific Visuals
+- **Idle**: Static teal orb, soft glow, "Start Chat" button visible
+- **Searching**: Blue pulsing orb, expanding rings, status text "Searching..."
+- **Connecting**: Rapid pulse, color shifts, disabled buttons
+- **Connected**: Breathing glow, soundwave active, "Next" button appears
 
-## State Management (Visual)
-- **Idle**: Show "Start Chat" button, no animation
-- **Searching**: Hide button or show "Searching..." with spinner
-- **Connecting**: Show progress state, disable interactions
-- **Connected**: Show soundwave animation, reveal "Next" button
+## Images
+**No images required** - Visual interest created entirely through animated gradients, glassmorphism effects, orbs, and particle systems. This maintains fast load times and pure code-based aesthetics.
 
 ## Accessibility
-- Clear focus states on all interactive elements
-- ARIA labels for status changes
-- Screen reader announcements for connection state changes
+- Focus rings visible with high contrast against dark background
+- ARIA live regions for status announcements
+- Reduced motion preference disables aurora/orb animations
+- Minimum 4.5:1 contrast for all text on dark backgrounds
